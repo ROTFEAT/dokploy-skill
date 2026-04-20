@@ -35,7 +35,7 @@ allowed-tools:
 如果上一步拿到全部三项 → 跳过此步，直接进入第 3 步。
 
 否则 **用 AskUserQuestion 一次问清楚缺失的值**（不要一项一项追问）：
-- 缺 `DOKPLOY_URL` 就问 "Dokploy 地址（如 http://100.111.209.48:3000）"
+- 缺 `DOKPLOY_URL` 就问 "Dokploy 地址（如 http://host:3000）"
 - 缺 `DOKPLOY_API_KEY` 就问 "x-api-key 值"
 - 缺 `DOKPLOY_APP_ID` 就问 "applicationId"
 
