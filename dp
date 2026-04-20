@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""
+dp — Dokploy deploy + poll + logs.
+
+Usage:
+  dp                            # read config from env/.env, deploy, poll, tail runtime logs
+  dp --url=... --key=... --app=...
+  dp --only-status              # just show latest deployment status, no deploy
+  dp --only-logs [--tail=N]     # just tail runtime logs, no deploy
+  dp --list                     # list latest 5 deployments
+  dp --poll-timeout=900 --poll-interval=3 --log-tail=80
+
+Config resolution (first win):
+  1. CLI args
+  2. Environment variables DOKPLOY_URL / DOKPLOY_API_KEY / DOKPLOY_APP_ID
+  3. .env file in current working directory
+
+Exit codes:
+  0 = done (deploy succeeded)
+  1 = deploy error (Dokploy reported status=error or HTTP error on trigger)
+  2 = missing config
+  3 = poll timeout
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+
+def load_dotenv(cwd: str) -> dict:
+    cfg = {}
+    p = Path(cwd) / ".env"
+    if not p.exists():
+        return cfg
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        cfg[k.strip()] = v.strip().strip('"').strip("'")
+    return cfg
+
+
+def resolve_config(args) -> dict:
+    dotenv = load_dotenv(os.getcwd())
+    def pick(*keys):
+        for k in keys:
+            v = os.environ.get(k) or dotenv.get(k)
+            if v:
+                return v
+        return None
+    return {
+        "url": args.url or pick("DOKPLOY_URL"),
+        "key": args.key or pick("DOKPLOY_API_KEY", "DKEY"),
+        "app": args.app or pick("DOKPLOY_APP_ID", "APPLICATION_ID"),
+    }
+
+
+def api(method: str, base: str, path: str, key: str, body=None, params=None, timeout: int = 30):
+    url = base.rstrip("/") + "/api" + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"x-api-key": key, "Accept": "application/json"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode("utf-8", errors="replace")
+            try:
+                return r.status, json.loads(raw) if raw else None
+            except json.JSONDecodeError:
+                return r.status, raw
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        return e.code, body
+    except urllib.error.URLError as e:
+        return 0, str(e)
+
+
+def fmt_log_payload(payload) -> str:
+    if payload is None:
+        return "(empty)"
+    if isinstance(payload, str):
+        return payload if payload else "(empty)"
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def cmd_list(cfg, n: int = 5):
+    code, deps = api("GET", cfg["url"], "/deployment.all", cfg["key"], params={"applicationId": cfg["app"]})
+    if code >= 300 or not isinstance(deps, list):
+        print(f"list failed: HTTP {code} {deps}", file=sys.stderr)
+        return 1
+    print(f"--- latest {min(n, len(deps))} deployments ---")
+    for d in deps[:n]:
+        title = (d.get("title") or "").splitlines()[0][:70]
+        print(f"{d.get('createdAt', '?')}  {d.get('status', '?'):7}  {d.get('deploymentId', '?')}  {title}")
+    return 0
+
+
+def cmd_only_status(cfg):
+    code, deps = api("GET", cfg["url"], "/deployment.all", cfg["key"], params={"applicationId": cfg["app"]})
+    if code >= 300 or not isinstance(deps, list) or not deps:
+        print(f"status failed: HTTP {code} {deps}", file=sys.stderr)
+        return 1
+    d = deps[0]
+    print(json.dumps({
+        "deploymentId": d.get("deploymentId"),
+        "status": d.get("status"),
+        "createdAt": d.get("createdAt"),
+        "errorMessage": d.get("errorMessage"),
+        "logPath": d.get("logPath"),
+    }, indent=2, ensure_ascii=False))
+    return 0 if d.get("status") == "done" else (1 if d.get("status") == "error" else 2)
+
+
+def cmd_only_logs(cfg, tail: int, search: str | None = None, since: str | None = None):
+    params = {"applicationId": cfg["app"], "tail": tail}
+    if search:
+        params["search"] = search
+    if since:
+        params["since"] = since
+    code, logs = api("GET", cfg["url"], "/application.readLogs", cfg["key"], params=params)
+    if code >= 300:
+        print(f"logs failed: HTTP {code} {logs}", file=sys.stderr)
+        return 1
+    print(fmt_log_payload(logs))
+    return 0
+
+
+def cmd_deploy(cfg, poll_interval: int, poll_timeout: int, log_tail: int):
+    print(f"→ Dokploy {cfg['url']}  app={cfg['app']}")
+    code, resp = api("POST", cfg["url"], "/application.deploy", cfg["key"], body={"applicationId": cfg["app"]})
+    if code >= 300:
+        print(f"deploy trigger failed: HTTP {code} {resp}", file=sys.stderr)
+        return 1
+    print(f"✓ deploy triggered (HTTP {code})")
+
+    t0 = time.time()
+    last_id = None
+    last_status = None
+    while time.time() - t0 < poll_timeout:
+        code, deps = api("GET", cfg["url"], "/deployment.all", cfg["key"], params={"applicationId": cfg["app"]})
+        if code >= 300 or not isinstance(deps, list) or not deps:
+            time.sleep(poll_interval)
+            continue
+        d = deps[0]
+        did = d.get("deploymentId")
+        st = d.get("status")
+        if did != last_id or st != last_status:
+            elapsed = int(time.time() - t0)
+            print(f"  [{elapsed:>3}s] {did} → {st}", flush=True)
+            last_id, last_status = did, st
+        if st in ("done", "error"):
+            print(f"\n=== Final: status={st} ===")
+            if st == "error":
+                err = d.get("errorMessage") or "(no errorMessage)"
+                print(f"errorMessage:\n{err}")
+                print(f"\nlogPath (on Dokploy host):\n  {d.get('logPath')}")
+            print(f"\n--- runtime logs (tail={log_tail}) ---")
+            code, logs = api("GET", cfg["url"], "/application.readLogs", cfg["key"],
+                             params={"applicationId": cfg["app"], "tail": log_tail})
+            if code >= 300:
+                print(f"(readLogs failed HTTP {code}: {logs})")
+            else:
+                print(fmt_log_payload(logs))
+            return 0 if st == "done" else 1
+        time.sleep(poll_interval)
+    print(f"TIMEOUT after {poll_timeout}s — last status={last_status}", file=sys.stderr)
+    return 3
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Dokploy deploy + poll + logs")
+    ap.add_argument("--url", help="Dokploy base URL, e.g. http://host:3000")
+    ap.add_argument("--key", help="x-api-key value")
+    ap.add_argument("--app", help="applicationId")
+    ap.add_argument("--poll-interval", type=int, default=3)
+    ap.add_argument("--poll-timeout", type=int, default=900)
+    ap.add_argument("--log-tail", type=int, default=80)
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--only-status", action="store_true", help="just print latest deployment status")
+    g.add_argument("--only-logs", action="store_true", help="just tail runtime logs")
+    g.add_argument("--list", dest="list_", action="store_true", help="list latest 5 deployments")
+    ap.add_argument("--search", help="with --only-logs: grep pattern")
+    ap.add_argument("--since", help="with --only-logs: since duration e.g. 10m, 1h")
+    args = ap.parse_args()
+
+    cfg = resolve_config(args)
+    missing = [k for k in ("url", "key", "app") if not cfg[k]]
+    if missing:
+        names = {"url": "DOKPLOY_URL", "key": "DOKPLOY_API_KEY", "app": "DOKPLOY_APP_ID"}
+        print("MISSING_CONFIG: " + ",".join(names[m] for m in missing), file=sys.stderr)
+        print("  Provide via CLI (--url --key --app) or .env in CWD or environment variables.", file=sys.stderr)
+        sys.exit(2)
+
+    if args.list_:
+        sys.exit(cmd_list(cfg))
+    if args.only_status:
+        sys.exit(cmd_only_status(cfg))
+    if args.only_logs:
+        sys.exit(cmd_only_logs(cfg, tail=args.log_tail, search=args.search, since=args.since))
+    sys.exit(cmd_deploy(cfg, args.poll_interval, args.poll_timeout, args.log_tail))
+
+
+if __name__ == "__main__":
+    main()
