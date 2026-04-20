@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Auto-bump the patch version on every commit.
+# 1.1.0 → 1.1.1 → 1.1.2 ...
+
+set -e
+
+VERSION_FILE="$(git rev-parse --show-toplevel)/VERSION"
+[ -f "$VERSION_FILE" ] || exit 0
+
+VERSION=$(cat "$VERSION_FILE" | tr -d '[:space:]')
+MAJOR=$(echo "$VERSION" | cut -d. -f1)
+MINOR=$(echo "$VERSION" | cut -d. -f2)
+PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+NEW="${MAJOR}.${MINOR}.$((PATCH + 1))"
+echo "$NEW" > "$VERSION_FILE"
+git add "$VERSION_FILE"
+echo "VERSION: $VERSION → $NEW"
