@@ -1,114 +1,92 @@
 ---
-name: dokploy-deploy
+name: dokploy-ops
 description: |
-  触发 Dokploy 应用部署、轮询部署状态、查看运行时和数据库日志、排查部署问题。
-  Deploy a Dokploy application via API, poll deployment status, tail runtime/DB logs, diagnose port routing.
-  触发词：部署到 dokploy / dokploy 部署 / deploy to dokploy / 推到 dokploy / 看 dokploy 日志 / /dp
-allowed-tools:
-  - Bash
-  - Read
-  - Edit
-  - Write
-  - AskUserQuestion
+  Operate Dokploy through its REST API: trigger application deployments, poll deployment
+  status, inspect app configuration, read runtime or Postgres logs, and diagnose common
+  Dokploy build or routing failures. Use when the user asks to deploy to Dokploy, inspect
+  Dokploy status/logs, troubleshoot a Dokploy application or database, or run /dp.
 ---
 
-# dokploy-deploy
+# dokploy-ops
 
-Dokploy 工作流通用入口：**部署 / 查日志 / 看状态 / 排障**。全部走 REST API，本地或远程 Dokploy 都能用。
+Use this skill as the single entry point for Dokploy deployment, status checks, logs, and API-level troubleshooting.
 
-## 工作流程
+## Workflow
 
-### 第 1 步：定位配置
+### 1. Resolve config before asking
 
-**不要一上来就问用户要密钥。** 按以下顺序查找：
+Check in this order:
 
-1. 环境变量：`DOKPLOY_URL` / `DOKPLOY_API_KEY` / `DOKPLOY_APP_ID`（可选 `DOKPLOY_POSTGRES_ID`）
-2. 当前工作目录的 `.env`
-3. 用户记忆（MEMORY.md）中同项目的历史记录
+1. Values already provided in the user request
+2. Environment variables: `DOKPLOY_URL`, `DOKPLOY_API_KEY`, `DOKPLOY_APP_ID`, optional `DOKPLOY_POSTGRES_ID`
+3. `.env` in the current working directory
 
-### 第 2 步：补齐缺失项
+Do not ask for secrets if the values are already available.
 
-如果三项齐全 → 直接第 3 步。否则用 `AskUserQuestion` 一次问齐（不要一项一项追问）：
-- 缺 `DOKPLOY_URL` → "Dokploy 地址（如 http://host:3000）"
-- 缺 `DOKPLOY_API_KEY` → "x-api-key 值"
-- 缺 `DOKPLOY_APP_ID` → "applicationId"
+### 2. Ask once if anything is missing
 
-拿到后再问：**是否保存到当前目录的 `.env`？**（默认不保存，避免误写）。用户确认后 append，不覆盖已有键。
+Ask for every missing item in one concise message.
 
-### 第 3 步：调用 `dp`
+- App actions need `DOKPLOY_URL`, `DOKPLOY_API_KEY`, `DOKPLOY_APP_ID`
+- Postgres log actions need `DOKPLOY_URL`, `DOKPLOY_API_KEY`, `DOKPLOY_POSTGRES_ID`
+
+Do not echo the API key back to the user. Do not write secrets into `.env` unless the user explicitly asks.
+
+### 3. Run the bundled CLI
+
+Prefer the bundled script over ad-hoc `curl` for flows it already covers. From the repo root or installed skill bundle:
 
 ```bash
-~/.claude/skills/dokploy-deploy/dp
+python3 scripts/dokploy_api.py
+python3 scripts/dokploy_api.py --only-status
+python3 scripts/dokploy_api.py --only-logs --log-tail=200
+python3 scripts/dokploy_api.py --only-logs --search=ERROR
+python3 scripts/dokploy_api.py --db-logs --postgres=<id>
+python3 scripts/dokploy_api.py --inspect
+python3 scripts/dokploy_api.py --list
 ```
 
-完整流程：`POST /api/application.deploy` → 每 3 秒轮询 `deployment.all` → 终态时打印 `readLogs` 最后 80 行。
+Run it from the target workspace so the workspace `.env` is visible. If you must invoke it
+from another directory, pass `--env-file=/absolute/path/to/.env`.
 
-**子命令**（按需选用，不要自己拼 curl）：
+Use CLI flags when the user already supplied values directly:
 
-| 子命令 | 作用 |
-|---|---|
-| `dp` | 触发部署 + 轮询 + 打印运行时日志 |
-| `dp --only-status` | 打印最新一次部署状态 |
-| `dp --only-logs --log-tail=200` | 拉应用容器运行时日志；可加 `--search=ERROR`（客户端 grep，绕开服务端 500） |
-| `dp --db-logs --postgres=<id>` | 拉 Postgres 容器日志 |
-| `dp --inspect` | 打印应用当前配置（git 源、build type、env、状态） |
-| `dp --list` | 最近 5 次部署 |
-| `dp --version` / `dp --check-update` | 本地版本 / 对比远端 VERSION |
+```bash
+python3 scripts/dokploy_api.py \
+  --url=http://host:3000 --key=<api-key> --app=<application-id>
+```
 
-**退出码：** 0=成功，1=部署失败/HTTP 错误，2=缺配置，3=轮询超时。
+For legacy Claude installs, `./dp` remains a wrapper around the same script and still supports
+`--version` and `--check-update`.
 
-### 第 4 步：结果解读
+### 4. Interpret the result
 
-**status=done** → 告诉用户部署成功，只挑日志里真正的 error/warn 展示，不要粘全量日志。
+If the final status is `done`, report success and show only the relevant warnings or errors from logs.
 
-**status=error** →
+If the final status is `error`:
+
 1. 打印 `errorMessage`
-2. 判断错误类型：构建错误 / 拉镜像失败 / 端口冲突 / 磁盘满 …
-3. `errorMessage` 若被截断，提示完整构建日志在 Dokploy 宿主机 `<logPath>`（REST 拿不到，需 SSH 或 UI）
-4. 给出下一步建议
+2. Classify the failure if obvious: build error, image pull failure, port/routing issue, disk full, bad env, and so on
+3. If `logPath` exists, mention that the full build log lives on the Dokploy host and is not exposed by the REST API
+4. Suggest the next debugging step
 
-**TIMEOUT (exit 3)** → 部署仍在跑，提示 `dp --only-status` 可随时查。
+If the script exits with a timeout, say the deployment is still running and suggest `--only-status`.
 
-## 已知坑位
+## Known gotchas
 
-- **`readLogs?search=...` 无匹配时返回 HTTP 500**（底层 `docker logs | grep` 非零退出）。`dp --search=` 已改为客户端 grep 避开此坑，不要直接在 URL 里塞 `search=`。
-- **Swarm ingress 端口映射常常不通**：`port.create` 创建了 `publishedPort:targetPort` 但外部 TCP 建连后 HTTP 超时。优先用 `domain.create` 挂 Traefik Host 路由（可用 `<ip>.sslip.io` / `<ip>.nip.io` / `<ip>-dashed.traefik.me` 三选一的公共通配 DNS，无需自建解析）。
-- **`python entrypoint.py` 不带 `-u`**：`print()` 走 stdout 缓冲区不会出现在 `readLogs`；`logging.*` 走 stderr 立即可见。排查"启动卡住"先看是不是 buffering 假象。
-- **sslip.io / traefik.me 域名在 Tailscale MagicDNS 下会被劫持**返回 `198.19.x.x`。本机测试用 `curl --resolve host:80:<ip>` 或 `curl -H "Host: <host>" http://<ip>/`。
-- **400 响应里的 `zodError`** 会列出全部必填字段（探 schema 最快的路径）。
-- **500 响应的 `message` 字段有时会泄漏 docker 容器 ID** — 出问题可拿来追容器。
+- Do not pass `search=` to `application.readLogs`; Dokploy may return HTTP 500 on no match. Use `--search`, which filters client-side.
+- Some self-hosted Dokploy versions expose `docker.*` container discovery routes but do not expose `application.readLogs` / `postgres.readLogs`. The bundled script auto-falls back to `/docker-container-logs` WebSocket with the same `x-api-key`.
+- Swarm `port.create` often accepts TCP but still fails HTTP traffic. Prefer `domain.create` with Traefik host routing.
+- `python app.py` without `-u` may buffer stdout, so `print()` can look missing in logs while `logging` output still appears.
+- `zodError.fieldErrors` is the fastest way to discover the required body for an unknown endpoint.
+- Some failures can only be diagnosed from the host-side `logPath`; the REST API does not expose that file.
 
-## 端点参考
+## References
 
-部署与日志：
-- `POST /api/application.deploy` `{applicationId}`
-- `GET  /api/deployment.all?applicationId=…` → 数组，首条最新
-- `GET  /api/application.readLogs?applicationId=…&tail=&since=` → 容器 stdout 字符串（不要加 `search=`）
-- `GET  /api/application.one?applicationId=…` → 完整应用配置
-- `GET  /api/postgres.readLogs?postgresId=…&tail=` → Postgres 容器日志
+Read `references/dokploy_api.md` when you need endpoint schemas or creation/update flows beyond deploy, status, and logs.
 
-资源管理（`REFERENCE.md` 有完整 schema）：
-- `POST /api/project.create` `{name}`
-- `POST /api/application.create` `{name, environmentId}`
-- `POST /api/postgres.create` `{name, databaseName, databaseUser, databasePassword, environmentId}`
-- `POST /api/postgres.deploy` `{postgresId}`
-- `POST /api/application.saveGitProvider` `{applicationId, customGitUrl, customGitBranch, customGitBuildPath, watchPaths}`
-- `POST /api/application.saveBuildType` `{applicationId, buildType:"dockerfile", dockerfile, dockerContextPath, ...}`
-- `POST /api/application.saveEnvironment` `{applicationId, env, buildArgs, buildSecrets, createEnvFile}`
-- `POST /api/port.create` `{applicationId, publishedPort, targetPort, protocol}`
-- `POST /api/domain.create` `{applicationId, host, port, path, https, certificateType, domainType:"application"}`
+## Boundaries
 
-认证：`x-api-key: <key>`。
-
-## 不要做的事
-
-- 不要在配置齐全时追问用户。
-- 不要把 API key 回显到输出（用 `<set>` 或 `***` 代替）。
-- 不要在没拿到用户确认前往 `.env` 写敏感值。
-- 不要自己拼 curl/python — 先看 `dp` 是否已经有对应子命令。
-
-## 版本与更新
-
-- 本地版本：`dp --version`
-- 对比远端：`dp --check-update`
-- 拉取更新：`/dp-update` 或 `python ~/.claude/skills/dokploy-deploy/skills/update_check.py --update`
+- Do not dump full raw logs unless the user asks for them.
+- Do not hand-roll new API calls before checking whether the bundled script already supports the flow.
+- If a needed Dokploy endpoint is not covered by the script, read `references/dokploy_api.md` first and then call the API directly.

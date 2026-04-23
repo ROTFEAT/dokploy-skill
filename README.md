@@ -1,8 +1,8 @@
 # dokploy-skill
 
-Claude Code skill + `/dp` / `/dp-update` slash commands for Dokploy. One entry
-point for **deploy → poll → tail runtime/DB logs → diagnose** via the Dokploy
-REST API. Works against local or remote Dokploy.
+Dokploy skill bundle for both Claude Code and Codex. One entry point for
+**deploy -> poll -> tail runtime or DB logs -> diagnose** via the Dokploy REST
+API. Works against local or remote Dokploy.
 
 ## Install
 
@@ -12,9 +12,18 @@ cd dokploy-skill
 ./install.sh
 ```
 
+Default install refreshes both Claude and Codex links. Optional flags:
+
+```bash
+./install.sh --claude-only
+./install.sh --codex-only
+```
+
 Creates symlinks:
-- `~/.claude/skills/dokploy-deploy → <repo>`
+- `~/.claude/skills/dokploy-ops -> <repo>`
+- `~/.claude/skills/dokploy-deploy -> <repo>` (legacy alias)
 - `~/.claude/commands/dp.md`, `~/.claude/commands/dp-update.md`
+- `~/.codex/skills/dokploy-ops -> <repo>`
 - Caches skill path at `~/.claude/.dokploy-skill-path`
 - Installs git pre-commit hook that auto-bumps `VERSION`'s patch number
 
@@ -26,10 +35,15 @@ Inside Claude Code:
 - Natural language also triggers the skill: "部署到 dokploy", "dokploy 部署",
   "deploy to dokploy", "看 dokploy 日志"
 
+Inside Codex:
+- mention `dokploy-ops` by name, or ask to deploy/check logs on Dokploy
+- the installer exposes the repo root as `~/.codex/skills/dokploy-ops`
+
 Direct CLI:
 
 ```bash
 ./dp                            # trigger deploy + poll + tail app logs
+python3 scripts/dokploy_api.py  # same logic without the wrapper
 ./dp --only-status              # latest deployment status
 ./dp --only-logs --log-tail=200 # runtime logs (app container)
 ./dp --only-logs --search=ERROR # client-side grep, no 500 bug
@@ -47,6 +61,12 @@ First match wins:
 2. Env vars: `DOKPLOY_URL`, `DOKPLOY_API_KEY`, `DOKPLOY_APP_ID`, `DOKPLOY_POSTGRES_ID`
 3. `.env` in CWD with the same keys
 
+If you launch the helper from outside the target workspace, pass:
+
+```bash
+python3 scripts/dokploy_api.py --env-file /absolute/path/to/.env
+```
+
 ## Exit codes
 
 | code | meaning |
@@ -61,6 +81,10 @@ First match wins:
 - `application.readLogs?search=...` returns **HTTP 500 on no match** (the
   server-side `docker logs | grep` exits non-zero). `dp --search=` therefore
   greps client-side.
+- Some self-hosted Dokploy versions expose runtime containers but return
+  **HTTP 404** for `application.readLogs` / `postgres.readLogs`. The bundled
+  helper falls back to `docker.*` discovery plus `/docker-container-logs`
+  WebSocket with the same `x-api-key`.
 - Swarm **ingress port publishing** (`port.create`) often accepts TCP but times
   out on HTTP. Prefer Traefik host routing via `domain.create` with a wildcard
   DNS (`<ip>.sslip.io`, `<ip>.nip.io`, `<dash-ip>.traefik.me`).
@@ -79,6 +103,7 @@ First match wins:
 
 ## Dokploy endpoints used
 
-See [REFERENCE.md](REFERENCE.md) for schemas of all endpoints invoked by this
-skill — including creation flows (project / application / postgres / git
-source / build type / env / port / domain).
+See [references/dokploy_api.md](references/dokploy_api.md) for schemas of all
+endpoints invoked by this skill, including the 404 log fallback path and common
+creation flows (project / application / postgres / git source / build type /
+env / port / domain).

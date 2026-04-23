@@ -8,7 +8,7 @@ description: 更新 dokploy-skill 到最新版本
 
 1. 定位 skill 目录（优先缓存路径，其次默认路径）：
    ```bash
-   DP_DIR=$(cat ~/.claude/.dokploy-skill-path 2>/dev/null || echo "$HOME/.claude/skills/dokploy-deploy")
+   DP_DIR=$(cat ~/.claude/.dokploy-skill-path 2>/dev/null || echo "$HOME/.claude/skills/dokploy-ops")
    ```
 
 2. 记录旧版本：
@@ -26,7 +26,7 @@ description: 更新 dokploy-skill 到最新版本
    cd "$DP_DIR" && git stash && git pull --ff-only origin main && git stash pop
    ```
 
-4. 重新运行安装（刷新软链接与钩子）：
+4. 重新运行安装（刷新 Claude/Codex 软链接与钩子）：
    ```bash
    cd "$DP_DIR" && ./install.sh 2>&1 | tail -6
    ```
