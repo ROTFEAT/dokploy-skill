@@ -34,6 +34,48 @@ from pathlib import Path
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WS_IDLE_TIMEOUT = 1.5
 WS_MAX_DURATION = 5.0
+CATALOG_PATH = Path(__file__).resolve().parents[1] / "references" / "dokploy_mcp_tools.json"
+DEFAULT_REDACT_FIELDS = {
+    "env",
+    "buildargs",
+    "composefile",
+    "dockercompose",
+    "environment",
+    "buildsecrets",
+    "previewbuildsecrets",
+    "password",
+    "currentpassword",
+    "apppassword",
+    "databasepassword",
+    "databaserootpassword",
+    "redispassword",
+    "mariadbpassword",
+    "mongopassword",
+    "mysqlpassword",
+    "postgrespassword",
+    "registrypassword",
+    "token",
+    "accesstoken",
+    "apptoken",
+    "apitoken",
+    "bottoken",
+    "refreshtoken",
+    "secret",
+    "clientsecret",
+    "apikey",
+    "secretaccesskey",
+    "accesskey",
+    "licensekey",
+    "userkey",
+    "privatekey",
+    "privatekeypass",
+    "encprivatekey",
+    "encprivatekeypass",
+    "sshkey",
+    "sshprivatekey",
+    "customgitsshkey",
+    "dockerauth",
+}
 
 
 def load_dotenv(cwd: str, env_file: str | None = None) -> dict[str, str]:
@@ -51,7 +93,79 @@ def load_dotenv(cwd: str, env_file: str | None = None) -> dict[str, str]:
     return cfg
 
 
-def resolve_config(args: argparse.Namespace) -> dict[str, str | None]:
+def parse_bool(value: str | None, fallback: bool = False) -> bool:
+    if value is None:
+        return fallback
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off", ""}:
+        return False
+    return fallback
+
+
+def parse_custom_headers(raw_headers: str | None) -> dict[str, str]:
+    if not raw_headers:
+        return {}
+    try:
+        parsed = json.loads(raw_headers)
+    except json.JSONDecodeError as exc:
+        raise ValueError("DOKPLOY_CUSTOM_HEADERS must be a JSON object") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("DOKPLOY_CUSTOM_HEADERS must be a JSON object")
+
+    reserved = {"x-api-key", "content-type", "accept"}
+    headers: dict[str, str] = {}
+    for name, value in parsed.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("DOKPLOY_CUSTOM_HEADERS contains an empty header name")
+        if name.lower() in reserved:
+            raise ValueError("DOKPLOY_CUSTOM_HEADERS cannot override x-api-key, content-type, or accept")
+        if not isinstance(value, str):
+            raise ValueError("DOKPLOY_CUSTOM_HEADERS values must be strings")
+        headers[name] = value
+    return headers
+
+
+def parse_int(value: str | int | None, default: int) -> int:
+    if value in (None, ""):
+        return default
+    return int(value)
+
+
+def parse_float(value: str | float | None, default: float) -> float:
+    if value in (None, ""):
+        return default
+    return float(value)
+
+
+def split_csv(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def normalize_query_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return value
+
+
+def encode_query_params(params: dict | None) -> str:
+    if not params:
+        return ""
+    encoded: dict = {}
+    for key, value in params.items():
+        if value is None:
+            continue
+        if isinstance(value, list):
+            encoded[key] = [normalize_query_value(item) for item in value]
+        else:
+            encoded[key] = normalize_query_value(value)
+    return urllib.parse.urlencode(encoded, doseq=True)
+
+
+def resolve_config(args: argparse.Namespace) -> dict[str, object | None]:
     dotenv = load_dotenv(os.getcwd(), args.env_file)
 
     def pick(*keys: str) -> str | None:
@@ -66,6 +180,15 @@ def resolve_config(args: argparse.Namespace) -> dict[str, str | None]:
         "key": args.key or pick("DOKPLOY_API_KEY", "DKEY"),
         "app": args.app or pick("DOKPLOY_APP_ID", "APPLICATION_ID"),
         "postgres": args.postgres or pick("DOKPLOY_POSTGRES_ID"),
+        "custom_headers": parse_custom_headers(args.custom_headers or pick("DOKPLOY_CUSTOM_HEADERS")),
+        "timeout": parse_int(args.timeout or pick("DOKPLOY_TIMEOUT"), 30000) / 1000,
+        "retry_attempts": parse_int(args.retry_attempts or pick("DOKPLOY_RETRY_ATTEMPTS"), 3),
+        "retry_delay": parse_float(args.retry_delay or pick("DOKPLOY_RETRY_DELAY"), 1000) / 1000,
+        "redact_env": args.redact
+        if args.redact is not None
+        else parse_bool(pick("DOKPLOY_REDACT_ENV"), False),
+        "redact_fields": split_csv(pick("DOKPLOY_REDACT_FIELDS")) or sorted(DEFAULT_REDACT_FIELDS),
+        "enabled_tags": split_csv(pick("DOKPLOY_ENABLED_TAGS")),
     }
 
 
@@ -76,31 +199,68 @@ def api(
     key: str,
     body: dict | None = None,
     params: dict | None = None,
-    timeout: int = 30,
+    timeout: float = 30,
+    custom_headers: dict[str, str] | None = None,
+    retry_attempts: int = 0,
+    retry_delay: float = 1.0,
 ):
     url = base.rstrip("/") + "/api" + path
     if params:
-        url += "?" + urllib.parse.urlencode(params)
+        query = encode_query_params(params)
+        if query:
+            url += "?" + query
 
     data = json.dumps(body).encode() if body is not None else None
     headers = {"x-api-key": key, "Accept": "application/json"}
+    if custom_headers:
+        headers.update(custom_headers)
     if body is not None:
         headers["Content-Type"] = "application/json"
 
-    request = urllib.request.Request(url, data=data, method=method, headers=headers)
+    attempts = max(1, int(retry_attempts) + 1)
+    for attempt in range(attempts):
+        request = urllib.request.Request(url, data=data, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+                try:
+                    return response.status, json.loads(raw) if raw else None
+                except json.JSONDecodeError:
+                    return response.status, raw
+        except urllib.error.HTTPError as exc:
+            payload = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            if exc.code >= 500 and attempt < attempts - 1:
+                time.sleep(retry_delay)
+                continue
+            return exc.code, payload
+        except urllib.error.URLError as exc:
+            if attempt < attempts - 1:
+                time.sleep(retry_delay)
+                continue
+            return 0, str(exc)
 
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-            try:
-                return response.status, json.loads(raw) if raw else None
-            except json.JSONDecodeError:
-                return response.status, raw
-    except urllib.error.HTTPError as exc:
-        payload = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        return exc.code, payload
-    except urllib.error.URLError as exc:
-        return 0, str(exc)
+    return 0, "request failed"
+
+
+def api_cfg(
+    cfg: dict[str, object | None],
+    method: str,
+    path: str,
+    body: dict | None = None,
+    params: dict | None = None,
+):
+    return api(
+        method,
+        str(cfg["url"]),
+        path,
+        str(cfg["key"]),
+        body=body,
+        params=params,
+        timeout=float(cfg.get("timeout") or 30),
+        custom_headers=cfg.get("custom_headers") if isinstance(cfg.get("custom_headers"), dict) else None,
+        retry_attempts=int(cfg.get("retry_attempts") or 0),
+        retry_delay=float(cfg.get("retry_delay") or 1.0),
+    )
 
 
 def format_payload(payload) -> str:
@@ -123,7 +283,252 @@ def filter_local(text: str, pattern: str | None) -> str:
     return "\n".join(keep) if keep else f"(no match for {pattern!r})"
 
 
-def require_config(cfg: dict[str, str | None], *keys: str) -> None:
+def load_catalog(path: str | None = None) -> dict:
+    catalog_path = Path(path).expanduser() if path else CATALOG_PATH
+    if not catalog_path.exists():
+        print(
+            f"missing MCP catalog: {catalog_path}\n"
+            "run: python3 scripts/sync_mcp_tools.py",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return json.loads(catalog_path.read_text(encoding="utf-8"))
+
+
+def find_tool(catalog: dict, name: str) -> dict | None:
+    normalized = name.strip().lower()
+    for tool in catalog.get("tools", []):
+        if str(tool.get("name", "")).lower() == normalized:
+            return tool
+    return None
+
+
+def apply_enabled_tags(catalog: dict, cfg: dict[str, object | None]) -> dict:
+    raw_tags = cfg.get("enabled_tags")
+    if not isinstance(raw_tags, list) or not raw_tags:
+        return catalog
+    enabled = {str(tag).lower() for tag in raw_tags}
+    tools = [tool for tool in catalog.get("tools", []) if str(tool.get("tag", "")).lower() in enabled]
+    categories: dict[str, int] = {}
+    for tool in tools:
+        tag = str(tool.get("tag", "unknown"))
+        categories[tag] = categories.get(tag, 0) + 1
+    filtered = dict(catalog)
+    filtered["tools"] = tools
+    filtered["tool_count"] = len(tools)
+    filtered["category_count"] = len(categories)
+    filtered["categories"] = dict(sorted(categories.items()))
+    return filtered
+
+
+def tool_search_text(tool: dict) -> str:
+    params = " ".join(str(param.get("name", "")) for param in tool.get("parameters", []))
+    return " ".join(
+        [
+            str(tool.get("name", "")),
+            str(tool.get("tag", "")),
+            str(tool.get("method", "")),
+            str(tool.get("path", "")),
+            str(tool.get("description", "")),
+            params,
+        ]
+    ).lower()
+
+
+def redact_sensitive(value, field_names: list[str]):
+    fields = {field.lower() for field in field_names}
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            if str(key).lower() in fields:
+                redacted[key] = "[REDACTED]"
+            else:
+                redacted[key] = redact_sensitive(item, field_names)
+        return redacted
+    if isinstance(value, list):
+        return [redact_sensitive(item, field_names) for item in value]
+    return value
+
+
+def output_payload(cfg: dict[str, object | None], payload) -> str:
+    if cfg.get("redact_env"):
+        fields = cfg.get("redact_fields")
+        if isinstance(fields, list):
+            payload = redact_sensitive(payload, [str(field) for field in fields])
+    return format_payload(payload)
+
+
+def parse_json_object(text: str, source: str) -> dict:
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{source} must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{source} must be a JSON object")
+    return parsed
+
+
+def parse_param_value(raw: str):
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+
+def load_input_object(args: argparse.Namespace) -> dict:
+    payload: dict = {}
+    if args.json_file:
+        if args.json_file == "-":
+            text = sys.stdin.read()
+        else:
+            text = Path(args.json_file).expanduser().read_text(encoding="utf-8")
+        payload.update(parse_json_object(text, "--json-file"))
+    if args.json_params:
+        payload.update(parse_json_object(args.json_params, "--json"))
+    for item in args.param or []:
+        if "=" not in item:
+            raise ValueError(f"--param must be key=value, got {item!r}")
+        key, raw_value = item.split("=", 1)
+        if not key:
+            raise ValueError("--param contains an empty key")
+        payload[key] = parse_param_value(raw_value)
+    return payload
+
+
+def require_tool_params(tool: dict, payload: dict) -> list[str]:
+    return [name for name in tool.get("required", []) if name not in payload]
+
+
+def print_tool_line(tool: dict) -> None:
+    required = tool.get("required") or []
+    optional = tool.get("optional") or []
+    parts = []
+    if required:
+        parts.append("required=" + ",".join(required))
+    if optional:
+        parts.append(f"optional={len(optional)}")
+    suffix = "  " + " ".join(parts) if parts else ""
+    print(f"{tool.get('name')}  {tool.get('method')} {tool.get('path')}{suffix}")
+
+
+def cmd_mcp_tools(catalog: dict, tag: str | None, limit: int) -> int:
+    tools = catalog.get("tools", [])
+
+    if tag:
+        tools = [tool for tool in tools if str(tool.get("tag", "")).lower() == tag.lower()]
+        for tool in tools[:limit]:
+            print_tool_line(tool)
+        if len(tools) > limit:
+            print(f"... {len(tools) - limit} more; increase --limit to show all")
+        return 0
+
+    print(f"Dokploy MCP catalog: {catalog.get('tool_count')} tools, {catalog.get('category_count')} categories")
+    print("--- categories ---")
+    for category, count in catalog.get("categories", {}).items():
+        print(f"{category}: {count}")
+    print("\nUse --mcp-tools --mcp-tag <category> or --mcp-search <query> to list tools.")
+    return 0
+
+
+def cmd_mcp_search(catalog: dict, query: str, tag: str | None, limit: int) -> int:
+    needle = query.lower()
+    tools = [
+        tool
+        for tool in catalog.get("tools", [])
+        if needle in tool_search_text(tool)
+        and (not tag or str(tool.get("tag", "")).lower() == tag.lower())
+    ]
+    for tool in tools[:limit]:
+        print_tool_line(tool)
+    if len(tools) > limit:
+        print(f"... {len(tools) - limit} more; increase --limit to show all")
+    if not tools:
+        print(f"no MCP tools matched {query!r}")
+    return 0
+
+
+def cmd_mcp_describe(catalog: dict, name: str) -> int:
+    tool = find_tool(catalog, name)
+    if tool is None:
+        print(f"unknown MCP tool: {name}", file=sys.stderr)
+        return 2
+    print(format_payload(tool))
+    return 0
+
+
+def cmd_mcp_call(
+    cfg: dict[str, object | None],
+    catalog: dict,
+    name: str,
+    payload: dict,
+    yes: bool,
+) -> int:
+    tool = find_tool(catalog, name)
+    if tool is None:
+        print(f"unknown MCP tool: {name}", file=sys.stderr)
+        return 2
+
+    missing = require_tool_params(tool, payload)
+    if missing:
+        print(f"missing required parameter(s): {', '.join(missing)}", file=sys.stderr)
+        return 2
+
+    annotations = tool.get("annotations") or {}
+    if annotations.get("destructiveHint") and not yes:
+        print(
+            f"{name} is marked destructive. Re-run with --yes after explicit confirmation.",
+            file=sys.stderr,
+        )
+        return 2
+
+    require_config(cfg, "url", "key")
+
+    method = str(tool["method"]).upper()
+    if method == "GET":
+        code, response = api_cfg(cfg, method, str(tool["path"]), params=payload)
+    else:
+        code, response = api_cfg(cfg, method, str(tool["path"]), body=payload)
+
+    if code == 0 or code >= 300:
+        print(f"{name} failed: HTTP {code}", file=sys.stderr)
+        print(output_payload(cfg, response), file=sys.stderr)
+        return 1
+
+    print(output_payload(cfg, response))
+    return 0
+
+
+def cmd_api_call(
+    cfg: dict[str, object | None],
+    method: str,
+    path: str,
+    payload: dict,
+    yes: bool,
+) -> int:
+    require_config(cfg, "url", "key")
+    method = method.upper()
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+        print(f"unsupported method: {method}", file=sys.stderr)
+        return 2
+    if method in {"DELETE", "PATCH", "PUT"} and not yes:
+        print(f"{method} {path} requires --yes after explicit confirmation.", file=sys.stderr)
+        return 2
+    if not path.startswith("/"):
+        path = "/" + path
+
+    if method == "GET":
+        code, response = api_cfg(cfg, method, path, params=payload)
+    else:
+        code, response = api_cfg(cfg, method, path, body=payload)
+    if code == 0 or code >= 300:
+        print(f"{method} {path} failed: HTTP {code}", file=sys.stderr)
+        print(output_payload(cfg, response), file=sys.stderr)
+        return 1
+    print(output_payload(cfg, response))
+    return 0
+
+
+def require_config(cfg: dict[str, object | None], *keys: str) -> None:
     missing = [key for key in keys if not cfg.get(key)]
     if not missing:
         return
@@ -334,7 +739,7 @@ def fetch_service_info(cfg: dict[str, str | None], kind: str) -> dict:
         path = "/postgres.one"
         params = {"postgresId": cfg["postgres"]}
 
-    code, info = api("GET", cfg["url"], path, cfg["key"], params=params)
+    code, info = api_cfg(cfg, "GET", path, params=params)
     if code >= 300 or not isinstance(info, dict):
         raise RuntimeError(f"{kind}.one failed: HTTP {code} {info}")
     return info
@@ -359,7 +764,7 @@ def discover_log_target(cfg: dict[str, str | None], kind: str) -> dict:
         if server_id:
             request_params["serverId"] = server_id
 
-        code, payload = api("GET", cfg["url"], path, cfg["key"], params=request_params)
+        code, payload = api_cfg(cfg, "GET", path, params=request_params)
         if code >= 300:
             errors.append(f"{path} HTTP {code}")
             continue
@@ -438,7 +843,7 @@ def fetch_logs_with_fallback(
     if since:
         params["since"] = since
 
-    code, logs = api("GET", cfg["url"], path, cfg["key"], params=params)
+    code, logs = api_cfg(cfg, "GET", path, params=params)
     if code < 300:
         return (logs if isinstance(logs, str) else format_payload(logs)), None
     if code != 404:
@@ -448,13 +853,7 @@ def fetch_logs_with_fallback(
 
 
 def fetch_deployments(cfg: dict[str, str | None]):
-    return api(
-        "GET",
-        cfg["url"],
-        "/deployment.all",
-        cfg["key"],
-        params={"applicationId": cfg["app"]},
-    )
+    return api_cfg(cfg, "GET", "/deployment.all", params={"applicationId": cfg["app"]})
 
 
 def cmd_list(cfg: dict[str, str | None], limit: int = 5) -> int:
@@ -540,13 +939,7 @@ def cmd_db_logs(cfg: dict[str, str | None], tail: int, search: str | None, since
 
 def cmd_inspect(cfg: dict[str, str | None]) -> int:
     require_config(cfg, "url", "key", "app")
-    code, info = api(
-        "GET",
-        cfg["url"],
-        "/application.one",
-        cfg["key"],
-        params={"applicationId": cfg["app"]},
-    )
+    code, info = api_cfg(cfg, "GET", "/application.one", params={"applicationId": cfg["app"]})
     if code >= 300:
         print(f"inspect failed: HTTP {code} {info}", file=sys.stderr)
         return 1
@@ -590,13 +983,7 @@ def cmd_deploy(
         baseline_id = deployments[0].get("deploymentId")
 
     print(f"-> Dokploy {cfg['url']}  app={cfg['app']}")
-    code, response = api(
-        "POST",
-        cfg["url"],
-        "/application.deploy",
-        cfg["key"],
-        body={"applicationId": cfg["app"]},
-    )
+    code, response = api_cfg(cfg, "POST", "/application.deploy", body={"applicationId": cfg["app"]})
     if code >= 300:
         print(f"deploy trigger failed: HTTP {code} {response}", file=sys.stderr)
         return 1
@@ -670,11 +1057,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--app", help="Dokploy applicationId")
     parser.add_argument("--postgres", help="Dokploy postgresId for --db-logs")
     parser.add_argument("--env-file", help="Optional path to the .env file to load for Dokploy config")
+    parser.add_argument("--custom-headers", help="JSON object of additional upstream request headers")
+    parser.add_argument("--timeout", help="Request timeout in milliseconds")
+    parser.add_argument("--retry-attempts", help="Number of retry attempts for network/5xx failures")
+    parser.add_argument("--retry-delay", help="Delay between retries in milliseconds")
+    parser.add_argument("--redact", action="store_true", default=None, help="Redact secret-bearing fields")
     parser.add_argument("--poll-interval", type=int, default=3)
     parser.add_argument("--poll-timeout", type=int, default=900)
     parser.add_argument("--log-tail", type=int, default=80)
     parser.add_argument("--search", help="client-side regex filter for logs")
     parser.add_argument("--since", help="runtime log time window, e.g. 10m or 1h")
+    parser.add_argument("--mcp-catalog", default=str(CATALOG_PATH), help="Path to MCP tool catalog JSON")
+    parser.add_argument("--mcp-tag", help="Filter MCP tools by category/tag")
+    parser.add_argument("--limit", type=int, default=100, help="Maximum MCP tools to print")
+    parser.add_argument("--json", dest="json_params", help="JSON object passed as MCP/API parameters")
+    parser.add_argument("--json-file", help="Path to JSON object params; use '-' for stdin")
+    parser.add_argument("--param", action="append", help="Extra parameter as key=value; JSON values are parsed")
+    parser.add_argument("--yes", action="store_true", help="Confirm destructive or raw unsafe operations")
+    parser.add_argument("--api-method", default="GET", help="Raw API method for --api-call")
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--only-status", action="store_true")
@@ -682,13 +1082,38 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--db-logs", action="store_true")
     mode.add_argument("--inspect", action="store_true")
     mode.add_argument("--list", dest="list_", action="store_true")
+    mode.add_argument("--mcp-tools", action="store_true", help="List MCP categories or tools by --mcp-tag")
+    mode.add_argument("--mcp-search", help="Search MCP tools by name, path, tag, or parameter")
+    mode.add_argument("--mcp-describe", help="Describe one MCP tool")
+    mode.add_argument("--mcp-call", help="Call one MCP tool by name")
+    mode.add_argument("--api-call", help="Call a raw Dokploy API path, e.g. /project.all")
     return parser
 
 
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    cfg = resolve_config(args)
+    try:
+        cfg = resolve_config(args)
+        payload = load_input_object(args)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    if args.mcp_tools:
+        catalog = apply_enabled_tags(load_catalog(args.mcp_catalog), cfg)
+        return cmd_mcp_tools(catalog, args.mcp_tag, args.limit)
+    if args.mcp_search:
+        catalog = apply_enabled_tags(load_catalog(args.mcp_catalog), cfg)
+        return cmd_mcp_search(catalog, args.mcp_search, args.mcp_tag, args.limit)
+    if args.mcp_describe:
+        catalog = apply_enabled_tags(load_catalog(args.mcp_catalog), cfg)
+        return cmd_mcp_describe(catalog, args.mcp_describe)
+    if args.mcp_call:
+        catalog = apply_enabled_tags(load_catalog(args.mcp_catalog), cfg)
+        return cmd_mcp_call(cfg, catalog, args.mcp_call, payload, args.yes)
+    if args.api_call:
+        return cmd_api_call(cfg, args.api_method, args.api_call, payload, args.yes)
 
     if args.list_:
         return cmd_list(cfg)

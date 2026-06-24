@@ -2,14 +2,18 @@
 name: dokploy-ops
 description: |
   Operate Dokploy through its REST API: trigger application deployments, poll deployment
-  status, inspect app configuration, read runtime or Postgres logs, and diagnose common
-  Dokploy build or routing failures. Use when the user asks to deploy to Dokploy, inspect
-  Dokploy status/logs, troubleshoot a Dokploy application or database, or run /dp.
+  status, inspect app configuration, read runtime or Postgres logs, call any endpoint from
+  the official Dokploy MCP tool catalog, and diagnose common Dokploy build or routing
+  failures. Use when the user asks to deploy to Dokploy, inspect Dokploy status/logs,
+  create/update/delete Dokploy resources, manage projects, apps, compose services,
+  databases, domains, backups, notifications, servers, settings, users, SSO, Docker,
+  Git providers, or run /dp.
 ---
 
 # dokploy-ops
 
 Use this skill as the single entry point for Dokploy deployment, status checks, logs, and API-level troubleshooting.
+It includes high-level deploy/log commands plus a generated catalog matching the official Dokploy MCP server tools.
 
 ## Workflow
 
@@ -58,6 +62,47 @@ python3 scripts/dokploy_api.py \
 
 For legacy Claude installs, `./dp` remains a wrapper around the same script and still supports
 `--version` and `--check-update`.
+
+### 3b. Use the MCP catalog for full API coverage
+
+For Dokploy operations not covered by the high-level deploy/log flags, use the generated MCP catalog instead of hand-rolling `curl`.
+
+Discover tools:
+
+```bash
+./dp --mcp-tools
+./dp --mcp-tools --mcp-tag application
+./dp --mcp-search domain
+./dp --mcp-describe application-one
+```
+
+Call tools by name:
+
+```bash
+./dp --mcp-call project-all
+./dp --mcp-call application-one --json '{"applicationId":"app_x"}'
+./dp --mcp-call postgres-deploy --json '{"postgresId":"pg_x"}'
+./dp --mcp-call domain-create --json-file /absolute/path/domain.json
+./dp --mcp-call application-update --param applicationId=app_x --param replicas=2
+```
+
+The catalog lives in `references/dokploy_mcp_tools.json` and the compact human-readable list lives in
+`references/dokploy_mcp_tools.md`. Read those references when you need exact parameter names, required fields,
+or available categories.
+
+Safety rules:
+
+- Before calling a tool with `destructiveHint` or a name containing delete/remove, show the exact tool name and JSON body to the user and get explicit confirmation. Then pass `--yes`.
+- Do not use `--yes` for destructive calls unless the user has confirmed that exact action.
+- Do not print API keys. Use `DOKPLOY_REDACT_ENV=true` or `--redact` when responses may include env vars, compose files, tokens, passwords, or SSH keys.
+- Honor `DOKPLOY_ENABLED_TAGS` when present; it intentionally narrows the visible tool surface.
+
+For an endpoint that exists in Dokploy but is not in the catalog, use raw API mode only after checking the references:
+
+```bash
+./dp --api-call /project.all --api-method GET
+./dp --api-call /some.path --api-method POST --json '{"key":"value"}'
+```
 
 ### 4. Interpret the result
 

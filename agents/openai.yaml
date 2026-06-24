@@ -1,4 +1,4 @@
 interface:
   display_name: "Dokploy Ops"
-  short_description: "Deploy and debug apps on Dokploy"
-  default_prompt: "Use $dokploy-ops to deploy this app on Dokploy, inspect its status, and read the relevant logs."
+  short_description: "Deploy, debug, and manage Dokploy via REST/MCP tools"
+  default_prompt: "Use $dokploy-ops to deploy this app on Dokploy, inspect its status, read relevant logs, or manage Dokploy resources with the MCP tool catalog."

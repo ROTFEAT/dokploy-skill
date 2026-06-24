@@ -60,7 +60,7 @@ if [ "$INSTALL_CODEX" -eq 1 ]; then
     ensure_dir_link "$HOME/.codex/skills/dokploy-ops" "$REPO"
 fi
 
-chmod +x "$REPO/dp" "$REPO/hooks/pre-commit" "$REPO/scripts/dokploy_api.py" 2>/dev/null || true
+chmod +x "$REPO/dp" "$REPO/hooks/pre-commit" "$REPO/scripts/dokploy_api.py" "$REPO/scripts/sync_mcp_tools.py" 2>/dev/null || true
 
 # install git pre-commit hook (auto-bump VERSION patch)
 if [ -d "$REPO/.git" ]; then

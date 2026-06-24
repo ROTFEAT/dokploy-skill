@@ -2,7 +2,8 @@
 
 Dokploy skill bundle for both Claude Code and Codex. One entry point for
 **deploy -> poll -> tail runtime or DB logs -> diagnose** via the Dokploy REST
-API. Works against local or remote Dokploy.
+API, plus a generated catalog that mirrors the official Dokploy MCP tool
+surface. Works against local or remote Dokploy.
 
 ## Install
 
@@ -50,9 +51,22 @@ python3 scripts/dokploy_api.py  # same logic without the wrapper
 ./dp --db-logs --postgres=<id>  # postgres container logs
 ./dp --inspect                  # current application config
 ./dp --list                     # last 5 deployments
+./dp --mcp-tools                # MCP category summary
+./dp --mcp-tools --mcp-tag application
+./dp --mcp-search deploy
+./dp --mcp-describe application-one
+./dp --mcp-call project-all
+./dp --mcp-call application-one --json '{"applicationId":"app_x"}'
+./dp --mcp-call application-delete --json '{"applicationId":"app_x"}' --yes
+./dp --api-call /project.all --api-method GET
 ./dp --version                  # local skill version
 ./dp --check-update             # compare to GitHub HEAD VERSION
 ```
+
+The MCP catalog is generated from Dokploy's official MCP OpenAPI input and
+currently includes 524 tools across 48 categories. Use
+`references/dokploy_mcp_tools.md` for the compact list, or
+`references/dokploy_mcp_tools.json` for exact schemas and annotations.
 
 ## Config
 
@@ -60,6 +74,15 @@ First match wins:
 1. CLI args (`--url --key --app [--postgres]`)
 2. Env vars: `DOKPLOY_URL`, `DOKPLOY_API_KEY`, `DOKPLOY_APP_ID`, `DOKPLOY_POSTGRES_ID`
 3. `.env` in CWD with the same keys
+
+The generic MCP/API path also honors the official MCP-style environment
+variables:
+
+- `DOKPLOY_CUSTOM_HEADERS` — JSON object of extra upstream headers
+- `DOKPLOY_ENABLED_TAGS` — comma-separated category filter
+- `DOKPLOY_TIMEOUT` — request timeout in milliseconds
+- `DOKPLOY_RETRY_ATTEMPTS`, `DOKPLOY_RETRY_DELAY`
+- `DOKPLOY_REDACT_ENV`, `DOKPLOY_REDACT_FIELDS`
 
 If you launch the helper from outside the target workspace, pass:
 
@@ -100,6 +123,8 @@ python3 scripts/dokploy_api.py --env-file /absolute/path/to/.env
   `./install.sh`).
 - `/dp-update` or `python skills/update_check.py --update` pulls latest from
   GitHub if remote `VERSION` is newer.
+- Refresh the MCP catalog from upstream with:
+  `python3 scripts/sync_mcp_tools.py`
 
 ## Dokploy endpoints used
 
@@ -107,3 +132,6 @@ See [references/dokploy_api.md](references/dokploy_api.md) for schemas of all
 endpoints invoked by this skill, including the 404 log fallback path and common
 creation flows (project / application / postgres / git source / build type /
 env / port / domain).
+
+See [references/dokploy_mcp_tools.md](references/dokploy_mcp_tools.md) for the
+generated MCP tool catalog, matching Dokploy's official MCP server.
