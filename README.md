@@ -80,7 +80,17 @@ currently includes 524 tools across 48 categories. Use
 First match wins:
 1. CLI args (`--url --key --app [--postgres]`)
 2. Env vars: `DOKPLOY_URL`, `DOKPLOY_API_KEY`, `DOKPLOY_APP_ID`, `DOKPLOY_POSTGRES_ID`
-3. `.env` in CWD with the same keys
+3. Env files in CWD (first found wins):
+   - `.dokploy.<env>.env` when `DOKPLOY_ENV=<env>` is set — one file per
+     deployment environment (`.dokploy.dev.env`, `.dokploy.production.env`, ...)
+   - `.env` with the same keys (single-environment projects)
+
+The skill records the full deployment context after each successful deploy
+(`DOKPLOY_URL`, `DOKPLOY_APP_ID`, `DOKPLOY_APP_NAME`, `DOKPLOY_APP_PATH`,
+optional `DOKPLOY_SERVER_ID` / `DOKPLOY_SERVER_IP`, `DOKPLOY_POSTGRES_ID`) into
+the env file for the active environment, creating it when missing, so future
+deploys only need `DOKPLOY_ENV=<env> ./dp`. API keys are written only with
+explicit user approval.
 
 The generic MCP/API path also honors the official MCP-style environment
 variables:

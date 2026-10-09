@@ -23,7 +23,17 @@ Check in this order:
 
 1. Values already provided in the user request
 2. Environment variables: `DOKPLOY_URL`, `DOKPLOY_API_KEY`, `DOKPLOY_APP_ID`, optional `DOKPLOY_POSTGRES_ID`
-3. `.env` in the current working directory
+3. Env files in the current working directory (first found wins):
+   - `.dokploy.<env>.env` when `DOKPLOY_ENV=<env>` is set (per-environment config, e.g. `.dokploy.dev.env`)
+   - `.env`
+
+When the user mentions an environment (e.g. "deploy to dev", "部署到 production"), set
+`DOKPLOY_ENV` for the shell invocation so the matching `.dokploy.<env>.env` is picked up:
+
+```bash
+DOKPLOY_ENV=dev python3 scripts/dokploy_api.py
+DOKPLOY_ENV=production ./dp --only-status
+```
 
 Do not ask for secrets if the values are already available.
 
@@ -35,6 +45,41 @@ Ask for every missing item in one concise message.
 - Postgres log actions need `DOKPLOY_URL`, `DOKPLOY_API_KEY`, `DOKPLOY_POSTGRES_ID`
 
 Do not echo the API key back to the user. Do not write secrets into `.env` unless the user explicitly asks.
+
+### 2a. Record deployment config in a per-environment env file
+
+After every successful deployment or config change, persist the full deployment context so
+the next session can redeploy without asking again. Use one file per environment, selected
+by `DOKPLOY_ENV`:
+
+- `.dokploy.production.env`, `.dokploy.dev.env`, ...
+- Plain `.env` is acceptable for projects with a single environment.
+
+If the file for the current environment does not exist, create it. Record at least:
+
+```dotenv
+DOKPLOY_URL=http://203.0.113.10:3000   # Dokploy instance base URL
+DOKPLOY_API_KEY=...                     # written only with explicit user approval
+DOKPLOY_APP_ID=...                      # applicationId
+DOKPLOY_APP_NAME=my-app                 # human-readable app name
+DOKPLOY_APP_PATH=/                      # build path / git build path
+DOKPLOY_SERVER_ID=...                   # empty or absent = local Dokploy server
+DOKPLOY_SERVER_IP=203.0.113.10          # remote server IP when not local
+DOKPLOY_POSTGRES_ID=...                 # only when a Postgres service is involved
+```
+
+`DOKPLOY_APP_PATH` and `DOKPLOY_SERVER_ID`/`DOKPLOY_SERVER_IP` come from
+`application.one` (`buildPath`, `serverId`) — fetch them with `./dp --inspect` or
+`./dp --mcp-call application-one` after configuring the source.
+
+Rules:
+
+- Never create or update an env file containing `DOKPLOY_API_KEY` without explicit user
+  approval. Offer it, and mention the file should be git-ignored (add it to `.gitignore`
+  when the user approves persisting secrets).
+- Keep environments separate: never merge dev values into the production file.
+- After writing the file, confirm the path to the user and remind them future deploys only
+  need `DOKPLOY_ENV=<env>` (or nothing, when plain `.env` is used).
 
 ### 2b. Default to the GitHub provider when configuring an app's source
 
