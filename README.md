@@ -1,5 +1,7 @@
 # dokploy-skill
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Dokploy skill bundle for both Claude Code and Codex. One entry point for
 **deploy -> poll -> tail runtime or DB logs -> diagnose** via the Dokploy REST
 API, plus a generated catalog that mirrors the official Dokploy MCP tool
