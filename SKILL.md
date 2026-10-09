@@ -36,6 +36,46 @@ Ask for every missing item in one concise message.
 
 Do not echo the API key back to the user. Do not write secrets into `.env` unless the user explicitly asks.
 
+### 2b. Default to the GitHub provider when configuring an app's source
+
+When creating an application or wiring up its deployment source, default to the
+GitHub provider and do not ask which provider to use:
+
+1. List configured GitHub apps with `./dp --mcp-call github-githubProviders` (no body).
+2. If none exist, tell the user to install the Dokploy GitHub App first
+   (Dokploy UI → Git providers) and stop. If one exists, pick it — ask only
+   when several are configured.
+3. Resolve the repo the user wants to deploy: prefer the current workspace
+   `git remote get-url origin`; otherwise ask once. Parse `owner`/`repository`
+   from the URL and set `branch` to the current branch (fallback `main`).
+4. Save the source with `application-saveGithubProvider` (all schema-required
+   fields, nullable values may be `null`):
+
+```bash
+./dp --mcp-call application-saveGithubProvider --json \
+  '{"applicationId":"<app>","githubId":"<id>","owner":"<owner>","repository":"<repo>","branch":"main","buildPath":"/","triggerType":"push"}'
+```
+
+If the GitHub provider is unavailable — no GitHub App configured, the repo is
+not on GitHub, or the user prefers otherwise — ask once which alternative to
+use, then proceed without further questions:
+
+- Generic git (any host, or a token-authenticated HTTPS URL):
+
+```bash
+./dp --mcp-call application-saveGitProvider --json \
+  '{"applicationId":"<app>","customGitUrl":"https://<token>@host/owner/repo.git","customGitBranch":"main","customGitBuildPath":"/","watchPaths":[]}'
+```
+
+- Docker image (prebuilt, public or private registry):
+
+```bash
+./dp --mcp-call application-saveDockerProvider --json \
+  '{"applicationId":"<app>","dockerImage":"registry.example.com/app:tag","username":null,"password":null,"registryUrl":null}'
+```
+
+Do not echo registry passwords or git tokens back to the user.
+
 ### 3. Run the bundled CLI
 
 Prefer the bundled script over ad-hoc `curl` for flows it already covers. From the repo root or installed skill bundle:

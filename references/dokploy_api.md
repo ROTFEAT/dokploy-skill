@@ -118,7 +118,34 @@ Creates a project and its default `production` environment.
 {"name": "my-app", "description": "optional", "environmentId": "..."}
 ```
 
+### `GET /api/github.githubProviders`
+
+Lists GitHub Apps connected to the Dokploy instance. Response items include `githubId`,
+`name`, and `gitProviderId`. Use it to resolve the `githubId` for
+`application.saveGithubProvider`. When the list is empty, the user must install the
+Dokploy GitHub App (Dokploy UI → Git providers) before the GitHub provider can be used.
+
+### `POST /api/application.saveGithubProvider`
+
+Default source provider. Requires a GitHub App from `github.githubProviders`:
+
+```json
+{
+  "applicationId": "...",
+  "githubId": "...",
+  "owner": "<github-owner>",
+  "repository": "<repo-name>",
+  "branch": "main",
+  "buildPath": "/",
+  "triggerType": "push"
+}
+```
+
+`triggerType` is `"push"` or `"tag"`; `enableSubmodules` and `watchPaths` are optional.
+
 ### `POST /api/application.saveGitProvider`
+
+Generic git fallback for non-GitHub hosts or token-authenticated HTTPS URLs:
 
 ```json
 {
@@ -129,6 +156,25 @@ Creates a project and its default `production` environment.
   "watchPaths": []
 }
 ```
+
+Optional: `enableSubmodules`, `customGitSSHKeyId` (for `git@` SSH URLs).
+
+### `POST /api/application.saveDockerProvider`
+
+Docker image fallback for prebuilt images:
+
+```json
+{
+  "applicationId": "...",
+  "dockerImage": "registry.example.com/app:tag",
+  "username": null,
+  "password": null,
+  "registryUrl": null
+}
+```
+
+`username` / `password` / `registryUrl` may be `null` for public images on the default
+registry. Never echo `password` values back to the user.
 
 ### `POST /api/application.saveBuildType`
 

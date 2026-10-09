@@ -40,6 +40,13 @@ Inside Codex:
 - mention `dokploy-ops` by name, or ask to deploy/check logs on Dokploy
 - the installer exposes the repo root as `~/.codex/skills/dokploy-ops`
 
+Source providers: the skill defaults to the GitHub provider (resolving a
+configured GitHub App via `github-githubProviders` and saving with
+`application-saveGithubProvider`). When GitHub is unavailable, it asks once and
+can fall back to generic git (`application-saveGitProvider`) or a prebuilt
+Docker image (`application-saveDockerProvider`). See
+[references/dokploy_api.md](references/dokploy_api.md).
+
 Direct CLI:
 
 ```bash
