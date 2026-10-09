@@ -5,7 +5,10 @@ Dokploy REST API helper for deploy, status, logs, and inspect flows.
 Config priority:
 1. CLI flags
 2. Environment variables
-3. .env in the current working directory
+3. Env files in the current working directory (first found wins):
+   - --env-file path
+   - .dokploy.<DOKPLOY_ENV>.env (per-environment config, e.g. DOKPLOY_ENV=dev -> .dokploy.dev.env)
+   - .env
 
 Exit codes:
 0 = success / final status done
@@ -80,8 +83,17 @@ DEFAULT_REDACT_FIELDS = {
 
 def load_dotenv(cwd: str, env_file: str | None = None) -> dict[str, str]:
     cfg: dict[str, str] = {}
-    env_path = Path(env_file).expanduser() if env_file else Path(cwd) / ".env"
-    if not env_path.exists():
+    candidates: list[Path] = []
+    if env_file:
+        candidates.append(Path(env_file).expanduser())
+    else:
+        profile = os.environ.get("DOKPLOY_ENV", "").strip()
+        if profile:
+            candidates.append(Path(cwd) / f".dokploy.{profile}.env")
+        candidates.append(Path(cwd) / ".env")
+
+    env_path = next((path for path in candidates if path.exists()), None)
+    if env_path is None:
         return cfg
 
     for raw_line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -1056,7 +1068,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--key", help="Dokploy x-api-key value")
     parser.add_argument("--app", help="Dokploy applicationId")
     parser.add_argument("--postgres", help="Dokploy postgresId for --db-logs")
-    parser.add_argument("--env-file", help="Optional path to the .env file to load for Dokploy config")
+    parser.add_argument(
+        "--env-file",
+        help="Optional path to the env file to load for Dokploy config; "
+        "otherwise .dokploy.<DOKPLOY_ENV>.env is tried before .env",
+    )
     parser.add_argument("--custom-headers", help="JSON object of additional upstream request headers")
     parser.add_argument("--timeout", help="Request timeout in milliseconds")
     parser.add_argument("--retry-attempts", help="Number of retry attempts for network/5xx failures")
