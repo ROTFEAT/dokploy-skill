@@ -1,13 +1,6 @@
 ---
 name: dokploy-ops
-description: |
-  Operate Dokploy through its REST API: trigger application deployments, poll deployment
-  status, inspect app configuration, read runtime or Postgres logs, call any endpoint from
-  the official Dokploy MCP tool catalog, and diagnose common Dokploy build or routing
-  failures. Use when the user asks to deploy to Dokploy, inspect Dokploy status/logs,
-  create/update/delete Dokploy resources, manage projects, apps, compose services,
-  databases, domains, backups, notifications, servers, settings, users, SSO, Docker,
-  Git providers, or run /dp.
+description: "Deploy to Dokploy, inspect status/logs, troubleshoot builds/routing, or manage Dokploy resources through its REST API and bundled CLI. Also use for /dp; generic Docker or database tasks alone do not trigger it."
 ---
 
 # dokploy-ops
@@ -197,7 +190,7 @@ If the final status is `error`:
 
 1. 打印 `errorMessage`
 2. Classify the failure if obvious: build error, image pull failure, port/routing issue, disk full, bad env, and so on
-3. If `logPath` exists, mention that the full build log lives on the Dokploy host and is not exposed by the REST API
+3. Read the full build log yourself — never ask the user to paste it: `DOKPLOY_ENV=<env> node ~/.claude/skills/dokploy-deploy/scripts/deployment_log.mjs [deploymentId]` (run in the project dir; uses the `/listen-deployment` WebSocket with `x-api-key` and the deployment's `logPath` + `buildServerId`/`serverId`). `errorMessage` is often null, the log has the real cause
 4. Suggest the next debugging step
 
 If the script exits with a timeout, say the deployment is still running and suggest `--only-status`.
@@ -209,7 +202,7 @@ If the script exits with a timeout, say the deployment is still running and sugg
 - Swarm `port.create` often accepts TCP but still fails HTTP traffic. Prefer `domain.create` with Traefik host routing.
 - `python app.py` without `-u` may buffer stdout, so `print()` can look missing in logs while `logging` output still appears.
 - `zodError.fieldErrors` is the fastest way to discover the required body for an unknown endpoint.
-- Some failures can only be diagnosed from the host-side `logPath`; the REST API does not expose that file.
+- Build logs are not in REST, but they are reachable: `scripts/deployment_log.mjs` reads them over the `/listen-deployment` WebSocket (works with the API key, no SSH needed; node-node SSH to build hosts is often flaky). Pushing to the tracked branch auto-deploys; after a push, poll `--only-status`, and on `error` read the log and fix instead of asking the user.
 
 ## References
 
